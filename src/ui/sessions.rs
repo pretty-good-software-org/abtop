@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::collector::{OrchestratorAgent, OrchestratorLiveness, OrchestratorTmuxState};
 use crate::locale::t;
 use crate::model::{AgentSession, ChatRole, FileOp};
 use crate::theme::Theme;
@@ -7,8 +8,34 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Clear, Paragraph, Row, Table};
 use ratatui::Frame;
+use std::time::SystemTime;
 
 use super::{btop_block_active, fmt_mem_kb, fmt_tokens, grad_at, make_gradient, truncate_str};
+
+fn orchestrator_agent_for<'a>(
+    app: &'a App,
+    session: &AgentSession,
+) -> Option<&'a OrchestratorAgent> {
+    let status = app.orchestrator_status.as_ref()?;
+    if status.is_stale_at(SystemTime::now()) {
+        return None;
+    }
+    status.find_agent(&session.session_id, session.pid)
+}
+
+fn orchestrator_state(agent: &OrchestratorAgent) -> (&'static str, &'static str, Color) {
+    let liveness = match &agent.liveness {
+        OrchestratorLiveness::Live => ("live", Color::Green),
+        OrchestratorLiveness::Stalled => ("stalled", Color::Yellow),
+        OrchestratorLiveness::Unknown => ("unknown", Color::Gray),
+    };
+    let tmux = match &agent.tmux_state {
+        OrchestratorTmuxState::Attached => "attached",
+        OrchestratorTmuxState::Detached => "detached",
+        OrchestratorTmuxState::Dead => "dead",
+    };
+    (liveness.0, tmux, liveness.1)
+}
 
 pub(crate) fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     draw_sessions_panel_active(f, app, area, theme, false);
@@ -556,9 +583,13 @@ pub(crate) fn draw_sessions_panel_active(
         let timeline_full_width = timeline_default && !has_left_detail;
 
         // Always show SESSION header (task) at top, then children/subagents/timeline/file_audit below
+        let orchestrator_agent = orchestrator_agent_for(app, session);
         let session_header_h: u16 = {
             let mut h = 1u16; // SESSION title
             if !session.initial_prompt.is_empty() {
+                h += 1;
+            }
+            if orchestrator_agent.is_some() {
                 h += 1;
             }
             h
@@ -613,6 +644,25 @@ pub(crate) fn draw_sessions_panel_active(
                     Span::styled(
                         truncate_str(&session.initial_prompt, max_w),
                         Style::default().fg(theme.main_fg),
+                    ),
+                ]));
+            }
+            if let Some(agent) = orchestrator_agent {
+                let (liveness, tmux, color) = orchestrator_state(agent);
+                let provider = agent.agent.as_deref().unwrap_or("agent");
+                let correlation = agent
+                    .correlation
+                    .as_ref()
+                    .and_then(|c| c.task_id.as_deref().or(c.node_id.as_deref()));
+                let suffix = correlation.map_or_else(String::new, |value| format!(" · {value}"));
+                lines.push(Line::from(vec![
+                    Span::styled("  ORCH ", Style::default().fg(theme.graph_text)),
+                    Span::styled(
+                        truncate_str(
+                            &format!("{provider} · {liveness} · tmux {tmux}{suffix}"),
+                            header_area.width.saturating_sub(8) as usize,
+                        ),
+                        Style::default().fg(color),
                     ),
                 ]));
             }
@@ -1346,6 +1396,63 @@ mod tests {
     #[test]
     fn task_row_text_respects_terminal_display_width() {
         assert_eq!(task_row_text("ＡＢＣＤ", 6), "└─ Ａ…");
+    }
+
+    #[test]
+    fn session_detail_renders_orchestrator_status() {
+        let mut app = App::new_with_config(Theme::default(), &[], PanelVisibility::default());
+        app.sessions = vec![test_session("local-session", "project")];
+        let now = chrono::Utc::now().to_rfc3339();
+        app.orchestrator_status = Some(crate::collector::OrchestratorStatus {
+            api_version: "v1".into(),
+            generated_at: now.clone(),
+            freshness: crate::collector::orchestrator::OrchestratorFreshness {
+                observed_at: now,
+                stale_after_seconds: 30,
+                stale: false,
+            },
+            agents: vec![crate::collector::OrchestratorAgent {
+                session: "remote-session".into(),
+                pid: Some(42),
+                agent: Some("pi".into()),
+                tmux_state: OrchestratorTmuxState::Attached,
+                liveness: OrchestratorLiveness::Live,
+                window_id: Some("window-1".into()),
+                correlation: None,
+            }],
+        });
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw_sessions_panel(
+                    f,
+                    &app,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 20,
+                    },
+                    &app.theme,
+                )
+            })
+            .unwrap();
+
+        let text = format!("{}", terminal.backend());
+        assert!(
+            text.contains("ORCH"),
+            "orchestrator label should render\n{text}"
+        );
+        assert!(
+            text.contains("live"),
+            "orchestrator liveness should render\n{text}"
+        );
+        assert!(
+            text.contains("attached"),
+            "tmux state should render\n{text}"
+        );
     }
 
     #[test]

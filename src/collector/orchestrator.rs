@@ -173,6 +173,15 @@ fn observed_at_epoch_seconds(status: &OrchestratorStatus) -> Option<u64> {
 }
 
 impl OrchestratorStatus {
+    /// Find a local session's remote record, preferring PID over the stable
+    /// session name because names can be reused across host processes.
+    pub fn find_agent(&self, session_id: &str, pid: u32) -> Option<&OrchestratorAgent> {
+        self.agents
+            .iter()
+            .find(|agent| agent.pid == Some(pid))
+            .or_else(|| self.agents.iter().find(|agent| agent.session == session_id))
+    }
+
     pub fn is_stale_at(&self, now: SystemTime) -> bool {
         if self.freshness.stale {
             return true;
@@ -345,6 +354,20 @@ mod tests {
             Some("42".into())
         );
         assert_eq!(status.agents[0].pid, Some(4242));
+    }
+
+    #[test]
+    fn correlation_prefers_pid_then_session_name() {
+        let status = parse_status(&response_body("2026-08-24T12:00:00Z", false)).unwrap();
+        assert_eq!(
+            status.find_agent("z-session", 4242).unwrap().session,
+            "a-session"
+        );
+        assert_eq!(
+            status.find_agent("z-session", 9999).unwrap().session,
+            "z-session"
+        );
+        assert!(status.find_agent("missing", 9999).is_none());
     }
 
     #[test]

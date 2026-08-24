@@ -274,12 +274,7 @@ impl App {
                         return None;
                     }
                     status
-                        .agents
-                        .iter()
-                        .find(|agent| {
-                            agent.pid.is_some_and(|pid| pid == s.pid)
-                                || agent.session == s.session_id
-                        })
+                        .find_agent(&s.session_id, s.pid)
                         .map(OrchestratorAgentView::from)
                 }),
                 compaction_count: s.compaction_count,
