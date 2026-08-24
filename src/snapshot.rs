@@ -12,6 +12,10 @@
 
 use crate::app::App;
 use crate::collector::mcp::ACTIVE_MTIME_SECS;
+use crate::collector::{
+    OrchestratorAgent, OrchestratorCorrelation, OrchestratorLiveness, OrchestratorStatus,
+    OrchestratorTmuxState,
+};
 use crate::host_info::{AgentAggregate, HostMetrics};
 use crate::model::{
     ChatRole, ChildProcess, OrphanPort, RateLimitInfo, SessionStatus, MAX_CHAT_MESSAGES,
@@ -48,6 +52,10 @@ pub struct Snapshot {
     pub orphan_ports: Vec<OrphanPort>,
     /// Detected MCP servers (currently `codex mcp-server`).
     pub mcp_servers: Vec<McpServerView>,
+    /// Optional status from agent-orchestrator. Omitted when the source is
+    /// disabled or has not completed a request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorStatus>,
 }
 
 /// One chat line from the transcript tail (detail view only).
@@ -139,6 +147,9 @@ pub struct SessionView {
     pub current_task: Option<String>,
     /// Child processes, each with any owned listening port.
     pub children: Vec<ChildProcess>,
+    /// Matching orchestrator status, when the stable session IDs correlate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorAgentView>,
     // --- richer fields for the per-session detail view ---
     /// Number of detected context-compaction events.
     pub compaction_count: u32,
@@ -152,6 +163,32 @@ pub struct SessionView {
     pub tool_calls: Vec<ToolCallView>,
     /// Recent chat transcript tail (user/assistant only).
     pub chat_messages: Vec<ChatMsgView>,
+}
+
+/// Orchestrator status correlated with one locally discovered session.
+#[derive(Debug, Clone, Serialize)]
+pub struct OrchestratorAgentView {
+    pub session: String,
+    pub pid: Option<u32>,
+    pub agent: Option<String>,
+    pub tmux_state: OrchestratorTmuxState,
+    pub liveness: OrchestratorLiveness,
+    pub window_id: Option<String>,
+    pub correlation: Option<OrchestratorCorrelation>,
+}
+
+impl From<&OrchestratorAgent> for OrchestratorAgentView {
+    fn from(agent: &OrchestratorAgent) -> Self {
+        Self {
+            session: agent.session.clone(),
+            pid: agent.pid,
+            agent: agent.agent.clone(),
+            tmux_state: agent.tmux_state.clone(),
+            liveness: agent.liveness.clone(),
+            window_id: agent.window_id.clone(),
+            correlation: agent.correlation.clone(),
+        }
+    }
 }
 
 /// A detected MCP server, with the internal `SystemTime` mtime resolved to a
@@ -196,6 +233,10 @@ impl App {
     /// server: lock the `App`, `tick_no_summaries()`, `to_snapshot()`, release.
     pub fn to_snapshot(&self, interval_ms: u64) -> Snapshot {
         let now = SystemTime::now();
+        let orchestrator = self
+            .orchestrator_status
+            .as_ref()
+            .map(|status| status.with_current_staleness(now));
 
         let sessions = self
             .sessions
@@ -228,6 +269,19 @@ impl App {
                 summary: self.session_summary(s),
                 current_task: s.current_tasks.last().cloned(),
                 children: s.children.clone(),
+                orchestrator: orchestrator.as_ref().and_then(|status| {
+                    if status.freshness.stale {
+                        return None;
+                    }
+                    status
+                        .agents
+                        .iter()
+                        .find(|agent| {
+                            agent.pid.is_some_and(|pid| pid == s.pid)
+                                || agent.session == s.session_id
+                        })
+                        .map(OrchestratorAgentView::from)
+                }),
                 compaction_count: s.compaction_count,
                 token_history: tail(&s.token_history, 64),
                 subagents: tail(&s.subagents, 16)
@@ -283,6 +337,7 @@ impl App {
             rate_limits: self.rate_limits.clone(),
             orphan_ports: self.orphan_ports.clone(),
             mcp_servers,
+            orchestrator,
         }
     }
 }
@@ -379,6 +434,46 @@ mod tests {
         // Re-parse as generic JSON to confirm it is well-formed.
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert!(parsed["sessions"].is_array());
+        assert!(parsed.get("orchestrator").is_none());
+    }
+
+    #[test]
+    fn orchestrator_status_correlates_without_adding_duplicate_sessions() {
+        let mut app = demo_app();
+        let session_id = "local-session";
+        app.sessions[0].session_id = session_id.to_string();
+        app.sessions[0].pid = 4242;
+        let observed_at = chrono::Utc::now().to_rfc3339();
+        app.orchestrator_status = Some(
+            crate::collector::orchestrator::parse_status(&format!(
+                r#"{{
+                    "api_version":"v1",
+                    "generated_at":"{observed_at}",
+                    "freshness":{{"observed_at":"{observed_at}","stale_after_seconds":30,"stale":false}},
+                    "agents":[{{"session":"tmux-session","pid":4242,"agent":"claude","tmux_state":"detached","liveness":"live","correlation":{{"task_id":"42"}}}}]
+                }}"#
+            ))
+            .expect("valid orchestrator fixture"),
+        );
+
+        let snapshot = app.to_snapshot(2_000);
+        assert_eq!(snapshot.sessions.len(), app.sessions.len());
+        assert_eq!(snapshot.orchestrator.as_ref().unwrap().agents.len(), 1);
+        let correlation = snapshot.sessions[0]
+            .orchestrator
+            .as_ref()
+            .unwrap()
+            .correlation
+            .as_ref()
+            .unwrap();
+        assert_eq!(correlation.task_id.as_deref(), Some("42"));
+
+        let json = serde_json::to_value(snapshot).expect("snapshot serializes");
+        assert_eq!(json["orchestrator"]["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            json["sessions"].as_array().unwrap().len(),
+            app.sessions.len()
+        );
     }
 
     #[test]
