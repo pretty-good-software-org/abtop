@@ -2,6 +2,7 @@ pub mod claude;
 pub mod codex;
 pub mod mcp;
 pub mod opencode;
+pub mod orchestrator;
 pub mod process;
 pub mod rate_limit;
 
@@ -9,6 +10,10 @@ pub use claude::ClaudeCollector;
 pub use codex::CodexCollector;
 pub use mcp::McpServer;
 pub use opencode::OpenCodeCollector;
+pub use orchestrator::{
+    OrchestratorAgent, OrchestratorCorrelation, OrchestratorLiveness, OrchestratorSource,
+    OrchestratorStatus, OrchestratorTmuxState,
+};
 pub use rate_limit::read_rate_limits;
 
 /// Abbreviate a filesystem path by replacing the home directory prefix with `~`.
@@ -304,6 +309,9 @@ pub struct MultiCollector {
     /// with the existing 1-of-N HashMap-overwrite caveat).
     pub mcp_suppress: bool,
     desktop_rollout_scanner: DesktopRolloutScanner,
+    orchestrator_source: Option<OrchestratorSource>,
+    /// Last completed orchestrator response, when the optional source is configured.
+    pub orchestrator_status: Option<OrchestratorStatus>,
 }
 
 /// How often to refresh expensive I/O (in ticks). 5 ticks × 2s = 10s.
@@ -348,6 +356,8 @@ impl MultiCollector {
             mcp_servers: Vec::new(),
             mcp_suppress: true,
             desktop_rollout_scanner: DesktopRolloutScanner::new(),
+            orchestrator_source: OrchestratorSource::from_env(),
+            orchestrator_status: None,
         }
     }
 
@@ -372,6 +382,12 @@ impl MultiCollector {
     }
 
     pub fn collect(&mut self) -> Vec<AgentSession> {
+        // This only polls a channel and may start a worker; network I/O never
+        // runs on the TUI thread.
+        if let Some(source) = &mut self.orchestrator_source {
+            self.orchestrator_status = source.poll();
+        }
+
         let slow_tick = self.tick_count >= SLOW_POLL_INTERVAL;
         if slow_tick {
             self.tick_count = 0;

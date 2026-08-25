@@ -1,4 +1,4 @@
-use crate::collector::{read_rate_limits, McpServer, MultiCollector};
+use crate::collector::{read_rate_limits, McpServer, MultiCollector, OrchestratorStatus};
 use crate::host_info::{AgentAggregate, HostMetrics, HostSampler};
 use crate::model::{AgentSession, OrphanPort, RateLimitInfo, SessionStatus};
 use crate::theme::Theme;
@@ -128,6 +128,8 @@ pub struct App {
     /// MultiCollector). Populated regardless of `show_mcp` so panel
     /// toggling doesn't cost a discovery roundtrip.
     pub mcp_servers: Vec<McpServer>,
+    /// Last completed optional agent-orchestrator response.
+    pub orchestrator_status: Option<OrchestratorStatus>,
     /// When true (default), mcp-server-owned rollouts are hidden from
     /// the sessions panel. Toggle with Shift+M.
     pub mcp_suppress_sessions: bool,
@@ -201,6 +203,7 @@ impl App {
             active_narrow_section: Some(NarrowSection::Sessions),
             maximized_narrow_section: None,
             mcp_servers: Vec::new(),
+            orchestrator_status: None,
             mcp_suppress_sessions: true,
             config_open: false,
             config_selected: 0,
@@ -510,6 +513,7 @@ impl App {
         self.sessions = self.collector.collect();
         self.orphan_ports = self.collector.orphan_ports.clone();
         self.mcp_servers = self.collector.mcp_servers.clone();
+        self.orchestrator_status = self.collector.orchestrator_status.clone();
         self.host_metrics = self.host_sampler.sample();
         self.agent_aggregate = AgentAggregate::from_sessions(&self.sessions);
         if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
