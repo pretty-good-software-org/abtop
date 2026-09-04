@@ -59,6 +59,7 @@ pub(crate) fn draw_sessions_panel_active(
         height: area.height.saturating_sub(2),
     };
 
+    let now = SystemTime::now();
     let visible = app.visible_indices();
     let session_rows: u16 = visible
         .iter()
@@ -74,7 +75,7 @@ pub(crate) fn draw_sessions_panel_active(
     let closed_rows = app
         .orchestrator_status
         .as_ref()
-        .filter(|status| !status.is_stale_at(SystemTime::now()))
+        .filter(|status| !status.is_stale_at(now))
         .map(|status| status.closed.len() as u16)
         .unwrap_or(0);
     let session_rows = session_rows.saturating_add(closed_rows);
@@ -380,7 +381,7 @@ pub(crate) fn draw_sessions_panel_active(
     if let Some(status) = app
         .orchestrator_status
         .as_ref()
-        .filter(|status| !status.is_stale_at(SystemTime::now()))
+        .filter(|status| !status.is_stale_at(now))
     {
         for closed in &status.closed {
             let mut cells = vec![
@@ -544,7 +545,11 @@ pub(crate) fn draw_sessions_panel_active(
         2
     };
     let selected_row_end = selected_row_start + selected_session_rows;
-    let scroll_offset = selected_row_end.saturating_sub(visible_rows);
+    let scroll_offset = if visible_sessions.is_empty() {
+        total_rows.saturating_sub(visible_rows)
+    } else {
+        selected_row_end.saturating_sub(visible_rows)
+    };
     let visible = if scroll_offset < rows.len() {
         rows.into_iter().skip(scroll_offset).collect::<Vec<_>>()
     } else {
