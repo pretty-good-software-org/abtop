@@ -59,6 +59,7 @@ pub(crate) fn draw_sessions_panel_active(
         height: area.height.saturating_sub(2),
     };
 
+    let now = SystemTime::now();
     let visible = app.visible_indices();
     let session_rows: u16 = visible
         .iter()
@@ -71,6 +72,13 @@ pub(crate) fn draw_sessions_panel_active(
             }
         })
         .sum();
+    let closed_rows = app
+        .orchestrator_status
+        .as_ref()
+        .filter(|status| !status.is_stale_at(now))
+        .map(|status| status.closed.len() as u16)
+        .unwrap_or(0);
+    let session_rows = session_rows.saturating_add(closed_rows);
     let detail_reserve: u16 = if app.show_timeline {
         (inner.height * 2 / 3).min(inner.height.saturating_sub(5))
     } else if inner.height <= 12 {
@@ -367,6 +375,62 @@ pub(crate) fn draw_sessions_panel_active(
         }
     }
 
+    // Closed orchestrator sessions are displayed as non-selectable history rows.
+    // They intentionally do not become AgentSession values: historical records
+    // must not affect token, memory, or active-session aggregates.
+    if let Some(status) = app
+        .orchestrator_status
+        .as_ref()
+        .filter(|status| !status.is_stale_at(now))
+    {
+        for closed in &status.closed {
+            let mut cells = vec![
+                Cell::from(""),
+                Cell::from(Span::styled("ORC", Style::default().fg(theme.inactive_fg))),
+            ];
+            if show_pid {
+                cells.push(Cell::from(""));
+            }
+            cells.push(Cell::from(Span::styled(
+                truncate_str("closed", project_w as usize),
+                Style::default().fg(theme.inactive_fg),
+            )));
+            if show_session_id {
+                cells.push(Cell::from(Span::styled(
+                    truncate_str(&closed.session, session_w as usize),
+                    Style::default().fg(theme.session_id),
+                )));
+            }
+            if show_config {
+                cells.push(Cell::from(""));
+            }
+            cells.extend([
+                Cell::from(Span::styled(
+                    truncate_str(&closed.reason, w.saturating_sub(24) as usize),
+                    Style::default().fg(theme.inactive_fg),
+                )),
+                Cell::from(Span::styled(
+                    "closed",
+                    Style::default().fg(theme.inactive_fg),
+                )),
+            ]);
+            if show_model {
+                cells.push(Cell::from(""));
+            }
+            cells.push(Cell::from("—"));
+            if show_tokens {
+                cells.push(Cell::from(""));
+            }
+            if show_memory {
+                cells.push(Cell::from(""));
+            }
+            if show_turn {
+                cells.push(Cell::from(""));
+            }
+            rows.push(Row::new(cells).height(1));
+        }
+    }
+
     let header_style = Style::default()
         .fg(theme.main_fg)
         .add_modifier(Modifier::BOLD);
@@ -481,7 +545,11 @@ pub(crate) fn draw_sessions_panel_active(
         2
     };
     let selected_row_end = selected_row_start + selected_session_rows;
-    let scroll_offset = selected_row_end.saturating_sub(visible_rows);
+    let scroll_offset = if visible_sessions.is_empty() {
+        total_rows.saturating_sub(visible_rows)
+    } else {
+        selected_row_end.saturating_sub(visible_rows)
+    };
     let visible = if scroll_offset < rows.len() {
         rows.into_iter().skip(scroll_offset).collect::<Vec<_>>()
     } else {
@@ -1411,6 +1479,7 @@ mod tests {
                 stale_after_seconds: 30,
                 stale: false,
             },
+            closed: vec![],
             agents: vec![crate::collector::OrchestratorAgent {
                 session: "remote-session".into(),
                 pid: Some(42),

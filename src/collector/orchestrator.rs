@@ -23,6 +23,16 @@ pub struct OrchestratorStatus {
     pub generated_at: String,
     pub freshness: OrchestratorFreshness,
     pub agents: Vec<OrchestratorAgent>,
+    #[serde(default)]
+    pub closed: Vec<OrchestratorClosedSession>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct OrchestratorClosedSession {
+    pub ts: String,
+    pub session: String,
+    pub reason: String,
+    pub host: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -93,11 +103,12 @@ impl OrchestratorConfig {
 
 fn status_endpoint(base: &str) -> String {
     let base = base.trim_end_matches('/');
-    if base.ends_with(STATUS_PATH) {
+    let endpoint = if base.ends_with(STATUS_PATH) {
         base.to_string()
     } else {
         format!("{base}{STATUS_PATH}")
-    }
+    };
+    format!("{endpoint}?include_closed=true")
 }
 
 /// Parse and validate one v1 response from the orchestrator.
@@ -117,6 +128,16 @@ pub fn parse_status(body: &str) -> Result<OrchestratorStatus, String> {
         return Err(format!(
             "parse orchestrator status: freshness.stale_after_seconds must be {STALE_AFTER_SECONDS}"
         ));
+    }
+
+    for closed in &status.closed {
+        if closed.session.trim().is_empty() {
+            return Err("parse orchestrator status: closed session is empty".to_string());
+        }
+        if closed.reason.trim().is_empty() {
+            return Err("parse orchestrator status: closed reason is empty".to_string());
+        }
+        validate_timestamp("closed.ts", &closed.ts)?;
     }
 
     for agent in &status.agents {
@@ -309,7 +330,8 @@ mod tests {
                 "agents":[
                     {{"session":"z-session","agent":"codex","tmux_state":"dead","liveness":"unknown"}},
                     {{"session":"a-session","pid":4242,"agent":"claude","tmux_state":"detached","liveness":"live","window_id":"window-1","correlation":{{"task_id":"42"}}}}
-                ]
+                ],
+                "closed":[{{"ts":"2026-08-24T11:00:00Z","session":"old-session","reason":"kill","host":"mac"}}]
             }}"#
         )
     }
@@ -357,6 +379,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_closed_history() {
+        let status = parse_status(&response_body("2026-08-24T12:00:00Z", false)).unwrap();
+        assert_eq!(status.closed.len(), 1);
+        assert_eq!(status.closed[0].session, "old-session");
+        assert_eq!(status.closed[0].reason, "kill");
+    }
+
+    #[test]
     fn correlation_prefers_pid_then_session_name() {
         let status = parse_status(&response_body("2026-08-24T12:00:00Z", false)).unwrap();
         assert_eq!(
@@ -388,7 +418,7 @@ mod tests {
         );
         assert!(source.poll().is_none());
         let request = server.join().expect("server result");
-        assert!(request.starts_with("GET /v1/agents/status HTTP/1.1"));
+        assert!(request.starts_with("GET /v1/agents/status?include_closed=true HTTP/1.1"));
         assert!(request
             .to_ascii_lowercase()
             .contains("authorization: bearer secret-token"));
