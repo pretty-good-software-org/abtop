@@ -71,6 +71,13 @@ pub(crate) fn draw_sessions_panel_active(
             }
         })
         .sum();
+    let closed_rows = app
+        .orchestrator_status
+        .as_ref()
+        .filter(|status| !status.is_stale_at(SystemTime::now()))
+        .map(|status| status.closed.len() as u16)
+        .unwrap_or(0);
+    let session_rows = session_rows.saturating_add(closed_rows);
     let detail_reserve: u16 = if app.show_timeline {
         (inner.height * 2 / 3).min(inner.height.saturating_sub(5))
     } else if inner.height <= 12 {
@@ -364,6 +371,62 @@ pub(crate) fn draw_sessions_panel_active(
                 }
                 rows.push(Row::new(sa_cells).height(1));
             }
+        }
+    }
+
+    // Closed orchestrator sessions are displayed as non-selectable history rows.
+    // They intentionally do not become AgentSession values: historical records
+    // must not affect token, memory, or active-session aggregates.
+    if let Some(status) = app
+        .orchestrator_status
+        .as_ref()
+        .filter(|status| !status.is_stale_at(SystemTime::now()))
+    {
+        for closed in &status.closed {
+            let mut cells = vec![
+                Cell::from(""),
+                Cell::from(Span::styled("ORC", Style::default().fg(theme.inactive_fg))),
+            ];
+            if show_pid {
+                cells.push(Cell::from(""));
+            }
+            cells.push(Cell::from(Span::styled(
+                truncate_str("closed", project_w as usize),
+                Style::default().fg(theme.inactive_fg),
+            )));
+            if show_session_id {
+                cells.push(Cell::from(Span::styled(
+                    truncate_str(&closed.session, session_w as usize),
+                    Style::default().fg(theme.session_id),
+                )));
+            }
+            if show_config {
+                cells.push(Cell::from(""));
+            }
+            cells.extend([
+                Cell::from(Span::styled(
+                    truncate_str(&closed.reason, w.saturating_sub(24) as usize),
+                    Style::default().fg(theme.inactive_fg),
+                )),
+                Cell::from(Span::styled(
+                    "closed",
+                    Style::default().fg(theme.inactive_fg),
+                )),
+            ]);
+            if show_model {
+                cells.push(Cell::from(""));
+            }
+            cells.push(Cell::from("—"));
+            if show_tokens {
+                cells.push(Cell::from(""));
+            }
+            if show_memory {
+                cells.push(Cell::from(""));
+            }
+            if show_turn {
+                cells.push(Cell::from(""));
+            }
+            rows.push(Row::new(cells).height(1));
         }
     }
 
@@ -1411,6 +1474,7 @@ mod tests {
                 stale_after_seconds: 30,
                 stale: false,
             },
+            closed: vec![],
             agents: vec![crate::collector::OrchestratorAgent {
                 session: "remote-session".into(),
                 pid: Some(42),
