@@ -1,8 +1,18 @@
+---
+last_validated: 2026-09-05T00:00:00Z
+project_type: rust-cli-tui
+---
+
 # abtop
+
+## Repository Overview
 
 AI agent monitor for your terminal. Like btop++, but for AI coding agents.
 
-Supports Claude Code, Codex CLI, and OpenCode sessions.
+Supports Claude Code, Codex CLI, and OpenCode sessions. This repository is the `pretty-good-software-org` fork of
+[graykode/abtop](https://github.com/graykode/abtop); it adds the optional agent-orchestrator status source
+(`src/collector/orchestrator.rs`). `Cargo.toml`, the installers, and the release workflow still point at the upstream
+`graykode` repository and Homebrew tap.
 
 ## Language Policy
 
@@ -14,23 +24,36 @@ English is mandatory for all project-facing work and communication.
 - When quoting or preserving non-English input, add an English explanation and keep the non-English text as short as possible.
 - If a contributor opens an issue, comment, or review in another language, respond in English and continue the thread in English.
 
-## Architecture
+## Repository Structure
 
-```
+```text
 src/
-├── main.rs                 # Entry, terminal setup, event loop, --setup flag
-├── app.rs                  # App state, tick logic, key handling, summary generation
+├── main.rs                 # Thin binary entry; calls abtop::run()
+├── lib.rs                  # Library root: CLI flags, terminal setup, event loop, key handling
+├── app.rs                  # App state, tick logic, panel toggles, summary generation, snapshot glue
+├── config.rs               # ~/.config/abtop/config.toml (theme, hidden_agents, claude_config_dirs, panels, language)
+├── theme.rs                # 12 built-in themes
+├── locale.rs               # UI strings (en, zh)
+├── snapshot.rs             # Serializable Snapshot for --json and library consumers
+├── demo.rs                 # Synthetic sessions for --demo
+├── host_info.rs            # Host CPU/MEM/LOAD metrics per platform
 ├── setup.rs                # StatusLine hook installation (abtop --setup)
 ├── ui/
-│   └── mod.rs              # All panels in single file: header, context, quota,
-│                           # tokens, projects, ports, sessions, footer
+│   ├── mod.rs              # Layout, braille/gradient helpers, panel dispatch
+│   ├── header.rs / footer.rs / help.rs / view_menu.rs / config.rs
+│   └── context.rs / quota.rs / tokens.rs / projects.rs / ports.rs / sessions.rs / mcp.rs
 ├── collector/
-│   ├── mod.rs              # MultiCollector orchestration, orphan port detection
+│   ├── mod.rs              # MultiCollector orchestration, orphan port detection, secret redaction
 │   ├── claude.rs           # Claude Code: session discovery, transcript parsing
 │   ├── codex.rs            # Codex CLI: session discovery via ps+lsof, JSONL parsing
 │   ├── opencode.rs         # OpenCode: session discovery via ps + SQLite DB parsing
+│   ├── mcp.rs              # `codex mcp-server` processes and their open rollout files
+│   ├── orchestrator.rs     # Optional agent-orchestrator status API client (HTTP, worker thread)
 │   ├── process.rs          # Child process tree (ps) + open ports (lsof) + git stats
 │   └── rate_limit.rs       # Rate limit file reading (~/.claude/abtop-rate-limits.json)
+├── jump/
+│   ├── mod.rs              # TerminalJumper registry (see "Terminal Jump")
+│   └── cmux.rs / tmux.rs / iterm2.rs
 └── model/
     ├── mod.rs              # Re-exports
     └── session.rs          # AgentSession, SessionStatus, RateLimitInfo,
@@ -84,7 +107,8 @@ Panel descriptions:
 
 ## Data Sources
 
-All read-only from local filesystem + `ps` + `lsof`. No API calls, no auth.
+All read-only from local filesystem + `ps` + `lsof`. No API calls, no auth — except the optional
+agent-orchestrator status source (section 11), which is only active when `ABTOP_ORCHESTRATOR_URL` is set.
 
 ### 1. Claude Code session discovery: process + config-root mapping
 
@@ -218,6 +242,17 @@ File format read by abtop:
 - `~/.claude/stats-cache.json` — daily aggregates. Only updated on `/stats`, NOT real-time.
 - `~/.claude/history.jsonl` — prompt history with sessionId.
 
+### 11. agent-orchestrator status API (optional, `collector/orchestrator.rs`)
+
+- Enabled only when `ABTOP_ORCHESTRATOR_URL` is set; `ABTOP_ORCHESTRATOR_TOKEN` is sent as a `Bearer` token when set.
+- `GET {url}/v1/agents/status?include_closed=true` every 2s with a 1s timeout, on a worker thread; `MultiCollector`
+  only polls a channel, so an unreachable orchestrator never delays a tick.
+- Response must be `api_version: "v1"` with `freshness.stale_after_seconds == 30`; anything else is rejected.
+- `agents[]` are matched to discovered sessions by PID first, then by session ID (`OrchestratorStatus::find_agent`),
+  and rendered as extra status (liveness / tmux state) in the sessions panel — they never add duplicate sessions. `closed[]` rows are shown as
+  non-selectable history rows.
+- Included in the `--json` snapshot under `orchestrator` (omitted when the source is not configured).
+
 ## Session Status Detection
 
 ```
@@ -271,14 +306,25 @@ Tracks child processes that have open ports. When a parent session dies but the 
 
 ## Key Bindings
 
+Source of truth: `src/ui/help.rs` (the `?` overlay) and the key match in `src/lib.rs`.
+
 | Key | Action |
 |-----|--------|
 | `↑`/`↓` or `k`/`j` | Select session in list |
 | `Enter` | Jump to session terminal (cmux / tmux / iTerm2) |
+| `/` | Filter sessions; `Esc` clears the filter / closes an overlay |
 | `x` | Kill selected session (SIGKILL) |
 | `X` | Kill all orphan ports |
-| `q` | Quit |
 | `r` | Force refresh |
+| `q` | Quit |
+| `v` | Open view menu |
+| `c` | Open config page |
+| `t` / `T` | Cycle theme / toggle subagent tree view |
+| `l` | Toggle timeline |
+| `f` | Toggle file audit |
+| `1`–`7` | Toggle panel visibility (context, quota, tokens, projects, ports, sessions, mcp) |
+| `M` | Toggle MCP server suppression in the sessions panel |
+| `?` | Help overlay |
 
 ## Tech Stack
 
@@ -287,17 +333,25 @@ Tracks child processes that have open ports. When a parent session dies but the 
 - **serde** + **serde_json** for JSON/JSONL parsing
 - **chrono** for timestamp formatting
 - **dirs** for home directory resolution
+- **reqwest** (blocking, rustls) only for the optional agent-orchestrator status source
 - **Polling intervals** (staggered to avoid freezes):
   - Session scan + transcript tail: every 2s
   - Process tree (ps): every 2s
   - Port scan (lsof) + git status + rate limits: every 10s (5 ticks)
 
-## Commit Convention
+## Development Guidelines
 
-```
-<type>: <description>
-```
-Types: `feat`, `fix`, `refactor`, `docs`, `chore`
+- Follow the Language Policy above and the existing module layout; keep changes focused.
+- CI (`.github/workflows/ci.yml`) runs `cargo clippy -- -D warnings`, `cargo test`, and `cargo build --release` on
+  every push and pull request to `main`; all three must pass locally before pushing.
+- Minimum supported Rust is `1.88` (`rust-version` in `Cargo.toml`).
+
+## Git Workflow
+
+1. `git status` — start clean.
+2. Branch from `main`; never commit to `main` directly.
+3. Commit with `<type>: <description>` — types: `feat`, `fix`, `refactor`, `docs`, `chore`.
+4. Push and open a pull request against `main`; CI must be green before merge.
 
 ## Commands
 
@@ -305,6 +359,8 @@ Types: `feat`, `fix`, `refactor`, `docs`, `chore`
 cargo build                    # Build
 cargo run                      # Run TUI
 cargo run -- --once            # Print snapshot and exit
+cargo run -- --json            # Print one JSON snapshot and exit
+cargo run -- --demo            # Run the TUI against synthetic sessions (kill/refresh/jump disabled)
 cargo run -- --setup           # Install StatusLine hook for rate limit collection
 cargo run -- --exit-on-jump    # Quit after Enter-jumping to a session terminal (for popup overlays)
 cargo test                     # Tests
@@ -386,7 +442,9 @@ Parsing/registry logic is unit-tested in `jump/mod.rs`; the thin `ps`/`osascript
 abtop reads transcripts, prompts, tool inputs, and memory files. These may contain secrets.
 - **`--once` output**: redact file contents from tool_use inputs. Show tool name + file path only, not content.
 - **TUI mode**: show tool name + first arg (file path), never show file contents or prompt text in session list.
-- **No network**: abtop never sends data anywhere. All local reads.
+- **No direct network requests by default**: all reads are local. The only direct request abtop makes is the
+  optional agent-orchestrator status poll, and only when `ABTOP_ORCHESTRATOR_URL` is set; use an `https://` URL
+  whenever `ABTOP_ORCHESTRATOR_TOKEN` is set, since the token is sent as a Bearer header.
 - **Exception**: summary generation calls `claude --print` locally (no network by abtop itself, but claude may use its API).
 
 ## Gotchas

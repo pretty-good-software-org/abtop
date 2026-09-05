@@ -1,3 +1,3 @@
-# abtop
+# Claude Code Instructions
 
-Claude-specific instructions are kept in [AGENTS.md](./AGENTS.md).
+See @AGENTS.md for detailed instructions.

@@ -16,7 +16,14 @@ Claude Code, Codex CLI, and OpenCode sessions are discovered from local process/
 
 All read-only. No API keys. No auth.
 
-## Install
+## Installation
+
+> [!NOTE]
+> The installer scripts, Homebrew tap, and `cargo install abtop` below ship the upstream `graykode/abtop` build, which does not include this fork's agent-orchestrator integration. To install this fork, build from source:
+>
+> ```bash
+> cargo install --git https://github.com/pretty-good-software-org/abtop
+> ```
 
 ### macOS / Linux
 
@@ -56,6 +63,7 @@ abtop --json             # Print one JSON snapshot and exit (for scripts/tools)
 abtop --setup            # Install rate limit collection hook
 abtop --theme dracula    # Launch with a specific theme
 abtop --mouse            # Enable mouse click/scroll navigation
+abtop --demo             # Run the TUI against synthetic sessions (kill/refresh/jump disabled)
 ```
 
 Recommended terminal size: **120x40** or larger. Minimum 80x24 — panels hide gracefully when small.
@@ -144,19 +152,39 @@ language = "zh"
 
 When `language` is unset, abtop auto-detects from `LANG` — any value starting with `zh` switches to Simplified Chinese, otherwise English.
 
+### agent-orchestrator status (optional)
+
+This fork can overlay liveness and tmux state from an agent-orchestrator status API (the org's private `agent-orchestrator` service) onto the sessions panel, and list its closed sessions as history rows:
+
+```bash
+export ABTOP_ORCHESTRATOR_URL=https://<orchestrator-host>:<port>  # abtop appends /v1/agents/status
+export ABTOP_ORCHESTRATOR_TOKEN=<token>                           # optional, sent as a Bearer token; use https:// when set
+abtop
+```
+
+The status is polled every 2 seconds with a 1-second timeout on a background thread, so an unreachable orchestrator never stalls the TUI. When the variables are unset, abtop makes no direct network requests (the `claude --print` summary path may still call its own API, see Privacy). The `--json` snapshot includes the response under `orchestrator`.
+
 ## Key Bindings
 
-| Key                | Action                               |
-| ------------------ | ------------------------------------ |
-| `↑`/`↓` or `k`/`j` | Select session                       |
-| `Enter`            | Jump to session terminal             |
-| `x`                | Kill selected session                |
-| `X`                | Kill all orphan ports                |
-| `t`                | Cycle theme                          |
-| `1`–`5`            | Toggle panel visibility              |
-| `Esc`              | Open/close config page               |
-| `q`                | Quit                                 |
-| `r`                | Force refresh                        |
+Press `?` in the TUI for the full list.
+
+| Key                | Action                                    |
+| ------------------ | ----------------------------------------- |
+| `↑`/`↓` or `k`/`j` | Select session                            |
+| `Enter`            | Jump to session terminal                  |
+| `/`                | Filter sessions (`Esc` clears)            |
+| `x`                | Kill selected session                     |
+| `X`                | Kill all orphan ports                     |
+| `r`                | Force refresh                             |
+| `q`                | Quit                                      |
+| `v`                | Open view menu                            |
+| `c`                | Open/close config page                    |
+| `t` / `T`          | Cycle theme / toggle subagent tree view   |
+| `l`                | Toggle timeline                           |
+| `f`                | Toggle file audit                         |
+| `1`–`7`            | Toggle panel visibility                   |
+| `M`                | Toggle MCP server suppression             |
+| `?`                | Help                                      |
 
 ## Library / JSON snapshot
 
@@ -191,7 +219,7 @@ is a reference consumer: a local-first web dashboard built on exactly this API.
 
 ## Privacy
 
-abtop reads local files and local process/open-file metadata only. No API keys, no auth. In the TUI and `--once` output, tool names and file paths are shown, but file contents and prompt text are never displayed. Session summaries are generated via `claude --print`, which makes its own API call — this is the only indirect network usage.
+abtop reads local files and local process/open-file metadata only. No API keys, no auth. In the TUI and `--once` output, tool names and file paths are shown, but file contents and prompt text are never displayed. Session summaries are generated via `claude --print`, which makes its own API call — this is the only indirect network usage. The only direct network usage is the optional agent-orchestrator status poll, and only when `ABTOP_ORCHESTRATOR_URL` is set.
 
 The JSON snapshot includes richer local dashboard data, including `summary`, `chat_messages`, working directories, config roots, tool-call previews, child process commands, token counts, and port metadata. Chat text is bounded and redacted by the collectors, but it is still derived from local transcripts and may contain sensitive project context. Treat JSON snapshots as local/private data and avoid writing them to shared logs or exposing them on a network without your own access controls.
 
