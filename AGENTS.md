@@ -26,7 +26,7 @@ English is mandatory for all project-facing work and communication.
 
 ## Repository Structure
 
-```
+```text
 src/
 ├── main.rs                 # Thin binary entry; calls abtop::run()
 ├── lib.rs                  # Library root: CLI flags, terminal setup, event loop, key handling
@@ -248,8 +248,8 @@ File format read by abtop:
 - `GET {url}/v1/agents/status?include_closed=true` every 2s with a 1s timeout, on a worker thread; `MultiCollector`
   only polls a channel, so an unreachable orchestrator never delays a tick.
 - Response must be `api_version: "v1"` with `freshness.stale_after_seconds == 30`; anything else is rejected.
-- `agents[]` are correlated to discovered sessions by stable session ID and rendered as extra status
-  (liveness / tmux state) in the sessions panel — they never add duplicate sessions. `closed[]` rows are shown as
+- `agents[]` are matched to discovered sessions by PID first, then by session ID (`OrchestratorStatus::find_agent`),
+  and rendered as extra status (liveness / tmux state) in the sessions panel — they never add duplicate sessions. `closed[]` rows are shown as
   non-selectable history rows.
 - Included in the `--json` snapshot under `orchestrator` (omitted when the source is not configured).
 
@@ -442,8 +442,9 @@ Parsing/registry logic is unit-tested in `jump/mod.rs`; the thin `ps`/`osascript
 abtop reads transcripts, prompts, tool inputs, and memory files. These may contain secrets.
 - **`--once` output**: redact file contents from tool_use inputs. Show tool name + file path only, not content.
 - **TUI mode**: show tool name + first arg (file path), never show file contents or prompt text in session list.
-- **No network by default**: abtop never sends data anywhere. All local reads. The only outbound request is the
-  optional agent-orchestrator status poll, and only when `ABTOP_ORCHESTRATOR_URL` is set.
+- **No direct network requests by default**: all reads are local. The only direct request abtop makes is the
+  optional agent-orchestrator status poll, and only when `ABTOP_ORCHESTRATOR_URL` is set; use an `https://` URL
+  whenever `ABTOP_ORCHESTRATOR_TOKEN` is set, since the token is sent as a Bearer header.
 - **Exception**: summary generation calls `claude --print` locally (no network by abtop itself, but claude may use its API).
 
 ## Gotchas

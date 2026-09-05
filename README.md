@@ -18,6 +18,13 @@ All read-only. No API keys. No auth.
 
 ## Installation
 
+> [!NOTE]
+> The installer scripts, Homebrew tap, and `cargo install abtop` below ship the upstream `graykode/abtop` build, which does not include this fork's agent-orchestrator integration. To install this fork, build from source:
+>
+> ```bash
+> cargo install --git https://github.com/pretty-good-software-org/abtop
+> ```
+
 ### macOS / Linux
 
 > [!IMPORTANT]
@@ -150,12 +157,12 @@ When `language` is unset, abtop auto-detects from `LANG` — any value starting 
 This fork can overlay liveness and tmux state from an agent-orchestrator status API (the org's private `agent-orchestrator` service) onto the sessions panel, and list its closed sessions as history rows:
 
 ```bash
-export ABTOP_ORCHESTRATOR_URL=http://<orchestrator-host>:<port>   # abtop appends /v1/agents/status
-export ABTOP_ORCHESTRATOR_TOKEN=<token>                           # optional, sent as a Bearer token
+export ABTOP_ORCHESTRATOR_URL=https://<orchestrator-host>:<port>  # abtop appends /v1/agents/status
+export ABTOP_ORCHESTRATOR_TOKEN=<token>                           # optional, sent as a Bearer token; use https:// when set
 abtop
 ```
 
-The status is polled every 2 seconds with a 1 second timeout on a background thread, so an unreachable orchestrator never stalls the TUI. When the variables are unset, abtop makes no network requests at all. The `--json` snapshot includes the response under `orchestrator`.
+The status is polled every 2 seconds with a 1-second timeout on a background thread, so an unreachable orchestrator never stalls the TUI. When the variables are unset, abtop makes no direct network requests (the `claude --print` summary path may still call its own API, see Privacy). The `--json` snapshot includes the response under `orchestrator`.
 
 ## Key Bindings
 
