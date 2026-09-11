@@ -502,6 +502,10 @@ impl App {
         self.drain_and_retry_summaries();
     }
 
+    pub fn orchestrator_error(&self) -> Option<&str> {
+        self.collector.orchestrator_error()
+    }
+
     /// Refresh all monitored data WITHOUT spawning background summary jobs.
     ///
     /// `tick` additionally calls [`App::drain_and_retry_summaries`], which
