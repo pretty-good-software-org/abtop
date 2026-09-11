@@ -365,6 +365,10 @@ impl MultiCollector {
         self.mcp_suppress = on;
     }
 
+    pub fn orchestrator_error(&self) -> Option<&str> {
+        self.orchestrator_source.as_ref()?.last_error()
+    }
+
     /// Collect rate limit info from all registered collectors.
     pub fn agent_rate_limits(&self) -> Vec<RateLimitInfo> {
         self.collectors

@@ -13,7 +13,7 @@ pub const ORCHESTRATOR_URL_ENV: &str = "ABTOP_ORCHESTRATOR_URL";
 pub const ORCHESTRATOR_TOKEN_ENV: &str = "ABTOP_ORCHESTRATOR_TOKEN";
 const STATUS_PATH: &str = "/v1/agents/status";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const API_VERSION: &str = "v1";
 const STALE_AFTER_SECONDS: u64 = 30;
 
@@ -254,6 +254,7 @@ type FetchResult = Result<OrchestratorStatus, String>;
 pub struct OrchestratorSource {
     config: OrchestratorConfig,
     status: Option<OrchestratorStatus>,
+    last_error: Option<String>,
     in_flight: bool,
     last_started: Option<Instant>,
     tx: mpsc::Sender<FetchResult>,
@@ -270,6 +271,7 @@ impl OrchestratorSource {
         Some(Self {
             config,
             status: None,
+            last_error: None,
             in_flight: false,
             last_started: None,
             tx,
@@ -291,8 +293,12 @@ impl OrchestratorSource {
     pub fn poll(&mut self) -> Option<OrchestratorStatus> {
         while let Ok(result) = self.rx.try_recv() {
             self.in_flight = false;
-            if let Ok(status) = result {
-                self.status = Some(status);
+            match result {
+                Ok(status) => {
+                    self.status = Some(status);
+                    self.last_error = None;
+                }
+                Err(error) => self.last_error = Some(error),
             }
         }
 
@@ -311,6 +317,10 @@ impl OrchestratorSource {
         }
 
         self.status.clone()
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 }
 
@@ -436,6 +446,44 @@ mod tests {
         let _ = server.join();
         thread::sleep(Duration::from_millis(25));
         assert!(source.poll().is_none(), "a timeout must not fabricate data");
+    }
+
+    #[test]
+    fn failed_request_is_reported_as_last_error() {
+        let (url, server) = start_server(
+            response_body("2026-08-24T12:00:00Z", false),
+            Duration::from_millis(200),
+        );
+        let mut source =
+            OrchestratorSource::for_test(status_endpoint(&url), None, Duration::from_millis(20));
+        source.poll();
+        let _ = server.join();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while source.last_error().is_none() && Instant::now() < deadline {
+            source.poll();
+            thread::sleep(Duration::from_millis(10));
+        }
+        let error = source.last_error().expect("timeout is reported");
+        assert!(
+            error.starts_with("fetch orchestrator status:"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn successful_request_clears_last_error() {
+        let (url, server) =
+            start_server(response_body("2026-08-24T12:00:00Z", false), Duration::ZERO);
+        let mut source =
+            OrchestratorSource::for_test(status_endpoint(&url), None, Duration::from_secs(1));
+        source.last_error = Some("fetch orchestrator status: HTTP 503".to_string());
+        source.poll();
+        server.join().expect("server result");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while source.poll().is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(source.last_error(), None);
     }
 
     #[test]

@@ -49,7 +49,11 @@ pub(crate) fn draw_sessions_panel_active(
     active: bool,
 ) {
     // Render the outer block
-    let block = btop_block_active("sessions", "⁶", theme.proc_box, theme, active);
+    let title = match app.orchestrator_error() {
+        Some(error) => format!("sessions · {error}"),
+        None => "sessions".to_string(),
+    };
+    let block = btop_block_active(&title, "⁶", theme.proc_box, theme, active);
     f.render_widget(block, area);
 
     let inner = Rect {
