@@ -458,7 +458,11 @@ mod tests {
             OrchestratorSource::for_test(status_endpoint(&url), None, Duration::from_millis(20));
         source.poll();
         let _ = server.join();
-        source.poll();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while source.last_error().is_none() && Instant::now() < deadline {
+            source.poll();
+            thread::sleep(Duration::from_millis(10));
+        }
         let error = source.last_error().expect("timeout is reported");
         assert!(
             error.starts_with("fetch orchestrator status:"),
